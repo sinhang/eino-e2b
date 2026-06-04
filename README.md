@@ -7,7 +7,7 @@ Built on top of [e2b-go-sdk](https://github.com/sinhang/e2b-go-sdk) for sandbox 
 ## Installation
 
 ```bash
-go get eino-e2b
+go get github.com/sinhang/eino-e2b
 ```
 
 Requires Go 1.22+.
@@ -203,3 +203,10 @@ E2B_API_KEY=your-key go run main.go
 ## License
 
 Apache License 2.0
+
+### tag
+```shell
+git push -u origin main
+git tag v0.0.1
+git push origin v0.0.1
+```
