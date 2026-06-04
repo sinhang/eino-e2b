@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 
@@ -24,7 +25,23 @@ func (b *Backend) runPython(ctx context.Context, script string) (string, error) 
 	if exec.Error != nil {
 		return "", fmt.Errorf("e2b: python error: %s: %s", exec.Error.Name, exec.Error.Value)
 	}
-	return strings.Join(exec.Logs.Stdout, "\n"), nil
+
+	stdout := strings.Join(exec.Logs.Stdout, "\n")
+	stderr := strings.Join(exec.Logs.Stderr, "\n")
+
+	// If the script produced no stdout and no stderr, the code interpreter
+	// may have silently failed (e.g. non-NDJSON response silently discarded).
+	// Log a warning and include stderr in the error if available.
+	if stdout == "" && stderr == "" && len(script) > 0 {
+		log.Printf("e2b: runPython: code interpreter returned empty response (stdout=0 stderr=0 results=%d)",
+			len(exec.Results))
+	}
+
+	if stderr != "" {
+		log.Printf("e2b: runPython stderr: %s", stderr)
+	}
+
+	return stdout, nil
 }
 
 // LsInfo lists files and directories at the given path.
