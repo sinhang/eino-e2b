@@ -133,7 +133,7 @@ Use the filesystem middleware to give an AI agent sandboxed file operations:
 
 ```go
 import (
-    e2b "eino-e2b"
+    e2b "github.com/sinhang/eino-e2b"
     "github.com/cloudwego/eino/adk"
     "github.com/cloudwego/eino/adk/middlewares/filesystem"
 )
@@ -144,15 +144,16 @@ backend, _ := e2b.NewBackend(ctx, &e2b.Config{
 })
 defer backend.Close(ctx)
 
-fsMiddleware, _ := filesystem.NewMiddleware(ctx, &filesystem.Config{
+fsMiddleware, _ := filesystem.New(ctx, &filesystem.MiddlewareConfig{
     Backend: backend,
+    Shell:   backend, // enables execute tool for shell commands
 })
 
 agent, _ := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
     Name:        "FileSystemAgent",
     Description: "Agent with sandboxed filesystem access",
     Model:       chatModel,
-    Middlewares:  []adk.AgentMiddleware{fsMiddleware},
+    Handlers:    []adk.ChatModelAgentMiddleware{fsMiddleware},
 })
 ```
 
