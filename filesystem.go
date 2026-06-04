@@ -23,6 +23,9 @@ func (b *Backend) runPython(ctx context.Context, script string) (string, error) 
 		return "", fmt.Errorf("e2b: python execution failed: %w", err)
 	}
 	if exec.Error != nil {
+		stderr := strings.Join(exec.Logs.Stderr, "\n")
+		log.Printf("e2b: python error [%s]: %s (traceback=%s stderr=%q)",
+			exec.Error.Name, exec.Error.Value, exec.Error.Traceback, stderr)
 		return "", fmt.Errorf("e2b: python error: %s: %s", exec.Error.Name, exec.Error.Value)
 	}
 
@@ -197,6 +200,7 @@ func (b *Backend) GlobInfo(ctx context.Context, req *filesystem.GlobInfoRequest)
 	script := fmt.Sprintf(globPythonScript, path, req.Pattern)
 	output, err := b.runPython(ctx, script)
 	if err != nil {
+		log.Printf("e2b: glob failed: path=%q pattern=%q err=%v", path, req.Pattern, err)
 		return nil, fmt.Errorf("e2b: glob failed: %w", err)
 	}
 
@@ -379,7 +383,14 @@ import glob as glob_m, os, json
 path = %[1]q
 pattern = %[2]q
 
-os.chdir(path)
+try:
+    os.chdir(path)
+except (FileNotFoundError, NotADirectoryError, PermissionError) as e:
+    import sys
+    print("glob: path does not exist or not accessible: path=" + repr(path) + " error=" + str(e), file=sys.stderr)
+    print(json.dumps([]))
+    exit(0)
+
 matches = sorted(glob_m.glob(pattern, recursive=True))
 results = []
 for m in matches:
