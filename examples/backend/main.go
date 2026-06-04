@@ -19,7 +19,7 @@ import (
 	"log"
 	"os"
 
-	e2bbackend "eino-e2b"
+	e2bbackend "github.com/sinhang/eino-e2b"
 
 	"github.com/cloudwego/eino/adk/filesystem"
 )
@@ -35,15 +35,13 @@ func main() {
 	}
 
 	baseURL := os.Getenv("E2B_CUSTOM_BASE_URL")
-	sandboxID := os.Getenv("E2B_SANDBOX_ID")
-	template := "base"
 
 	config := &e2bbackend.Config{
 		APIKey:     apiKey,
 		BaseURL:    baseURL,
-		SandboxID:  sandboxID,
-		Template:   template,
+		Template:   "base",
 		TimeoutSec: 300,
+		// SandboxID 留空，NewBackend 自动创建 sandbox，Close 时自动销毁
 	}
 
 	backend, err := e2bbackend.NewBackend(ctx, config)

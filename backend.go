@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"os"
 
-	e2b "github.com/sinhang/e2b-go-sdk/e2b"
 	"github.com/cloudwego/eino/adk/filesystem"
+	e2b "github.com/sinhang/e2b-go-sdk/e2b"
 )
 
 // Config holds the configuration for the E2B filesystem backend.
@@ -173,6 +173,21 @@ func (b *Backend) Close(ctx context.Context) error {
 // SandboxID returns the underlying E2B sandbox identifier.
 func (b *Backend) SandboxID() string {
 	return b.sandboxID
+}
+
+// Client returns the underlying e2b-go-sdk Client, giving direct access to
+// sandbox lifecycle, volume management, and other low-level APIs not covered
+// by the filesystem.Backend interface.
+//
+// Common use cases:
+//
+//	// Create a volume
+//	backend.Client().PostVolumes(ctx, e2b.JSONMap{"name": "my-vol"})
+//
+//	// List all sandboxes
+//	sandboxes, _ := backend.Client().ListSandboxes(ctx, "")
+func (b *Backend) Client() *e2b.Client {
+	return b.client
 }
 
 // Compile-time interface checks.
