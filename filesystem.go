@@ -174,6 +174,7 @@ func (b *Backend) GrepRaw(ctx context.Context, req *filesystem.GrepRequest) ([]f
 	script := buildGrepScript(req)
 	output, err := b.runPython(ctx, script)
 	if err != nil {
+		log.Printf("e2b: grep failed: path=%q pattern=%q err=%v", path, req.Pattern, err)
 		return nil, fmt.Errorf("e2b: grep failed: %w", err)
 	}
 
@@ -307,7 +308,7 @@ except PermissionError:
 `
 
 const grepPythonScript = `
-import subprocess, json, fnmatch, os
+import subprocess, json, fnmatch, os, sys
 
 case_flag = %[1]q
 multiline_flag = %[2]q
@@ -317,6 +318,45 @@ glob_flag = %[5]q
 file_type_flag = %[6]q
 pattern = %[7]q
 search_path = %[8]q
+
+# Verify search path exists before attempting search.
+if search_path and not os.path.exists(search_path):
+    print("grep: path does not exist: " + repr(search_path), file=sys.stderr)
+    print("[]")
+    exit(0)
+
+responses = []
+
+def parse_output(output):
+    for line in output.strip().split("\n"):
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            if data.get("type") not in ("match", "context"):
+                continue
+            match_data = data.get("data", {})
+            match_path = match_data.get("path", {}).get("text", "")
+            lines_data = match_data.get("lines", {})
+            responses.append({
+                "Path": match_path,
+                "Line": match_data.get("line_number", 0),
+                "Content": lines_data.get("text", "").rstrip("\n")
+            })
+            continue
+        except json.JSONDecodeError:
+            pass
+        parts = line.split(":", 2)
+        if len(parts) >= 3:
+            try:
+                line_num = int(parts[1])
+            except ValueError:
+                continue
+            responses.append({
+                "Path": parts[0],
+                "Line": line_num,
+                "Content": parts[2].rstrip("\n")
+            })
 
 try:
     result = subprocess.run(["rg", "--json"] +
@@ -328,51 +368,24 @@ try:
         (["--type", file_type_flag.split()[-1]] if file_type_flag.strip() else []) +
         ["-e", pattern, "--", search_path],
         capture_output=True, text=True)
-    if result.returncode not in (0, 1):
-        raise RuntimeError("rg failed: " + result.stderr)
-except (FileNotFoundError, Exception):
+    if result.returncode == 0 or result.returncode == 1:
+        parse_output(result.stdout)
+    elif result.returncode > 1:
+        print("rg failed: " + result.stderr, file=sys.stderr)
+        raise RuntimeError(result.stderr)
+except:
     try:
         grep_cmd = ["grep", "-rn"]
         if case_flag.strip():
             grep_cmd.append("-i")
         grep_cmd.extend([pattern, search_path])
         result = subprocess.run(grep_cmd, capture_output=True, text=True)
-        if result.returncode > 1:
-            raise RuntimeError("grep failed: " + result.stderr)
-    except FileNotFoundError:
-        print("[]")
-        exit(0)
-
-responses = []
-for line in result.stdout.strip().split("\n"):
-    if not line:
-        continue
-    try:
-        data = json.loads(line)
-        if data.get("type") not in ("match", "context"):
-            continue
-        match_data = data.get("data", {})
-        match_path = match_data.get("path", {}).get("text", "")
-        lines_data = match_data.get("lines", {})
-        responses.append({
-            "Path": match_path,
-            "Line": match_data.get("line_number", 0),
-            "Content": lines_data.get("text", "").rstrip("\n")
-        })
-        continue
-    except json.JSONDecodeError:
-        pass
-    parts = line.split(":", 2)
-    if len(parts) >= 3:
-        try:
-            line_num = int(parts[1])
-        except ValueError:
-            continue
-        responses.append({
-            "Path": parts[0],
-            "Line": line_num,
-            "Content": parts[2].rstrip("\n")
-        })
+        if result.returncode <= 1:
+            parse_output(result.stdout)
+        elif result.returncode > 1:
+            print("grep error (code " + str(result.returncode) + "): " + result.stderr[:200], file=sys.stderr)
+    except Exception as e:
+        print("grep search error: " + str(e), file=sys.stderr)
 
 print(json.dumps(responses))
 `
