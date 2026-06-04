@@ -1,4 +1,4 @@
-module eino-e2b
+module github.com/sinhang/eino-e2b
 
 go 1.26.3
 
