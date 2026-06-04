@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/cloudwego/eino/adk/filesystem"
 	e2b "github.com/sinhang/e2b-go-sdk/e2b"
@@ -39,6 +40,12 @@ type Config struct {
 
 	// TimeoutSec is the sandbox idle timeout in seconds. Default: 300 (5 min).
 	TimeoutSec int
+
+	// DataPlaneTimeoutSec is the timeout for data-plane HTTP requests
+	// (code execution, file operations). Default: 300 (5 min).
+	// Increase this for long-running scripts that install packages or
+	// download large datasets.
+	DataPlaneTimeoutSec int
 
 	// Envs are environment variables injected into the sandbox at creation time.
 	// Only used when auto-creating a sandbox (SandboxID is empty).
@@ -115,6 +122,9 @@ func NewBackend(ctx context.Context, cfg *Config) (*Backend, error) {
 	}
 	if cfg.HTTPClient != nil {
 		opts = append(opts, e2b.WithHTTPClient(cfg.HTTPClient))
+		if cfg.DataPlaneTimeoutSec > 0 {
+			opts = append(opts, e2b.WithDataPlaneTimeout(time.Duration(cfg.DataPlaneTimeoutSec)*time.Second))
+		}
 	}
 
 	client := e2b.NewClient(opts...)
