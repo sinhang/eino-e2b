@@ -63,10 +63,15 @@ type Config struct {
 }
 
 // Backend implements filesystem.Backend backed by an E2B sandbox.
+//
+// Command execution goes through the Python code interpreter (port 49999),
+// NOT through envd (port 49983), because Cube deployments typically only
+// expose the code interpreter port in their templates.
 type Backend struct {
 	client      *e2b.Client
 	sandboxID   string
-	autoCreated bool // true if we created the sandbox and should clean up on Close
+	autoCreated bool                 // true if we created the sandbox and should clean up on Close
+	interpreter *e2b.CodeInterpreter // cached Python code interpreter (port 49999)
 }
 
 // NewBackend creates a new E2B filesystem backend.
@@ -159,6 +164,7 @@ func NewBackend(ctx context.Context, cfg *Config) (*Backend, error) {
 		client:      client,
 		sandboxID:   sandboxID,
 		autoCreated: autoCreated,
+		interpreter: e2b.NewCodeInterpreter(client, sandboxID),
 	}, nil
 }
 

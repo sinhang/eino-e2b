@@ -7,36 +7,31 @@ import (
 	"fmt"
 
 	"github.com/cloudwego/eino/adk/filesystem"
-	e2b "github.com/sinhang/e2b-go-sdk/e2b"
 )
 
-// Execute runs a shell command inside the E2B sandbox via a Python wrapper script.
-// Uses python3 subprocess to capture stdout, stderr, and exit code reliably.
+// Execute runs a shell command inside the E2B sandbox via the Python code
+// interpreter (port 49999), which is the only reliable execution path on Cube
+// deployments. The command is wrapped in a Python subprocess call that captures
+// stdout, stderr, and exit code.
 func (b *Backend) Execute(ctx context.Context, req *filesystem.ExecuteRequest) (*filesystem.ExecuteResponse, error) {
 	if req.Command == "" {
 		return nil, fmt.Errorf("e2b: execute: command is required")
 	}
 
-	// Base64-encode the command to avoid shell escaping issues inside
-	// the Python template (same pattern used by all other Python scripts).
 	cmdB64 := base64.StdEncoding.EncodeToString([]byte(req.Command))
 	script := fmt.Sprintf(executePythonScript, cmdB64)
 
-	result, err := b.client.Commands(b.sandboxID).Run(ctx, e2b.RunCommandRequest{
-		Cmd:  "python3",
-		Args: []string{"-c", script},
-	})
+	output, err := b.runPython(ctx, script)
 	if err != nil {
 		return nil, fmt.Errorf("e2b: execute failed: %w", err)
 	}
 
-	// Try to parse JSON output from the Python wrapper.
 	var out struct {
 		Stdout   string `json:"stdout"`
 		Stderr   string `json:"stderr"`
 		ExitCode int    `json:"exitCode"`
 	}
-	if json.Unmarshal([]byte(result.Stdout), &out) == nil {
+	if json.Unmarshal([]byte(output), &out) == nil {
 		exitCode := out.ExitCode
 		resp := &filesystem.ExecuteResponse{
 			Output:   out.Stdout,
@@ -52,29 +47,14 @@ func (b *Backend) Execute(ctx context.Context, req *filesystem.ExecuteRequest) (
 		return resp, nil
 	}
 
-	// Fallback: use raw output if JSON parsing fails.
-	exitCode := result.ExitCode
-	resp := &filesystem.ExecuteResponse{
-		Output:   result.Stdout,
+	// Fallback: treat raw output as command output.
+	exitCode := 0
+	return &filesystem.ExecuteResponse{
+		Output:   output,
 		ExitCode: &exitCode,
-	}
-	if result.Stderr != "" {
-		if resp.Output != "" {
-			resp.Output += "\n[stderr]:\n" + result.Stderr
-		} else {
-			resp.Output = "[stderr]:\n" + result.Stderr
-		}
-	}
-
-	return resp, nil
+	}, nil
 }
 
-// executePythonScript runs an arbitrary shell command via subprocess.run and
-// prints the result as a single JSON object: {"stdout": "...", "stderr": "...", "exitCode": N}.
-//
-// The command is base64-encoded in the template parameter to avoid any shell
-// escaping issues — matching the pattern used by all other Python scripts in
-// this package.
 const executePythonScript = `
 import subprocess, json, base64, sys
 
@@ -109,5 +89,4 @@ except Exception as e:
 print(json.dumps(result))
 `
 
-// Compile-time interface check for Shell.
 var _ filesystem.Shell = (*Backend)(nil)

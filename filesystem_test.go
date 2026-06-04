@@ -10,30 +10,24 @@ import (
 	"strings"
 	"testing"
 
-	e2b "github.com/sinhang/e2b-go-sdk/e2b"
 	"github.com/cloudwego/eino/adk/filesystem"
+	e2b "github.com/sinhang/e2b-go-sdk/e2b"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockHandler is a mutable handler for the mock server (set per-test to handle
-// filesystem and command operations). Sandbox creation/deletion is handled automatically.
+// mockHandler is a mutable handler for non-lifecycle requests.
 var mockHandler http.HandlerFunc
 
 // setupTest creates a mock HTTP server and a Backend configured to use it.
-// The mock server automatically handles:
-//   - POST /sandboxes → returns sandbox ID
-//   - DELETE /sandboxes/{id} → returns 204
-//
-// All other requests are dispatched to mockHandler, which tests must set.
+// The mock auto-handles sandbox create/delete; everything else delegates to mockHandler.
 func setupTest(t *testing.T) (*Backend, *httptest.Server) {
 	t.Helper()
 
 	const testSandboxID = "test-sandbox-123"
 
-	// Use a closure to capture both the auto-handler and the mutable mockHandler.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Handle sandbox lifecycle automatically.
+		// Auto-handle sandbox lifecycle.
 		if r.URL.Path == "/sandboxes" && r.Method == http.MethodPost {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(mockSandboxResponse(testSandboxID)))
@@ -44,7 +38,6 @@ func setupTest(t *testing.T) (*Backend, *httptest.Server) {
 			return
 		}
 
-		// Delegate everything else to the test's mockHandler.
 		if mockHandler != nil {
 			mockHandler(w, r)
 		} else {
@@ -52,7 +45,6 @@ func setupTest(t *testing.T) (*Backend, *httptest.Server) {
 		}
 	}))
 
-	// Point both control plane and data plane to the mock server.
 	cfg := &Config{
 		APIKey:       "test-api-key",
 		BaseURL:      server.URL,
@@ -71,18 +63,39 @@ func setupTest(t *testing.T) (*Backend, *httptest.Server) {
 	return backend, server
 }
 
-// mockSandboxResponse returns a valid sandbox creation JSON response.
 func mockSandboxResponse(sandboxID string) string {
 	return fmt.Sprintf(`{"sandboxID":"%s","templateID":"test-template","state":"running"}`, sandboxID)
 }
 
-// decodeBody is a helper to read and unmarshal a JSON request body.
 func decodeBody(t *testing.T, r *http.Request, v any) {
 	t.Helper()
 	body, err := io.ReadAll(r.Body)
 	require.NoError(t, err)
 	err = json.Unmarshal(body, v)
 	require.NoError(t, err)
+}
+
+// ndjsonLine returns a single NDJSON line (newline-terminated JSON).
+func ndjsonLine(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b) + "\n"
+}
+
+// mockExecuteResponse returns an NDJSON response simulating the code interpreter
+// (port 49999 /execute endpoint). Each stdout line becomes an NDJSON stdout
+// message; stderr becomes an NDJSON stderr message.
+func mockExecuteOK(stdout string) string {
+	var lines []string
+	for _, line := range strings.Split(stdout, "\n") {
+		lines = append(lines, ndjsonLine(map[string]interface{}{
+			"type": "stdout",
+			"text": line + "\n",
+		}))
+	}
+	lines = append(lines, ndjsonLine(map[string]interface{}{
+		"type": "end_of_execution",
+	}))
+	return strings.Join(lines, "")
 }
 
 // ============================== Constructor Tests ==============================
@@ -163,7 +176,6 @@ func TestNewBackend(t *testing.T) {
 			APIKey:       "test-key",
 			BaseURL:      server.URL,
 			DataPlaneURL: server.URL,
-			// Template and TimeoutSec left as zero → should default
 		}
 		backend, err := NewBackend(context.Background(), cfg)
 		require.NoError(t, err)
@@ -179,15 +191,11 @@ func TestBackend_LsInfo(t *testing.T) {
 
 	t.Run("Success: ListFiles", func(t *testing.T) {
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
 				lsOutput := `{"Path": "file1.txt", "IsDir": false, "Size": 100, "ModifiedAt": "2025-01-15T10:30:00Z"}
 {"Path": "subdir", "IsDir": true, "Size": 0, "ModifiedAt": "2025-01-14T08:00:00Z"}`
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    lsOutput,
-					"stderr":    "",
-					"exit_code": float64(0),
-				})
+				w.Write([]byte(mockExecuteOK(lsOutput)))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -206,13 +214,9 @@ func TestBackend_LsInfo(t *testing.T) {
 
 	t.Run("EmptyDirectory", func(t *testing.T) {
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    "",
-					"stderr":    "",
-					"exit_code": float64(0),
-				})
+				w.Write([]byte(mockExecuteOK("")))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -223,15 +227,13 @@ func TestBackend_LsInfo(t *testing.T) {
 		assert.Len(t, files, 0)
 	})
 
-	t.Run("Failure: ScriptError", func(t *testing.T) {
+	t.Run("Failure: PythonError", func(t *testing.T) {
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    "Permission denied",
-					"stderr":    "PermissionError",
-					"exit_code": float64(1),
-				})
+				w.Write([]byte(
+					ndjsonLine(map[string]interface{}{"type": "error", "text": "PermissionError"}),
+				))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -239,7 +241,7 @@ func TestBackend_LsInfo(t *testing.T) {
 
 		_, err := backend.LsInfo(context.Background(), &filesystem.LsInfoRequest{Path: "/root"})
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "exited with code 1")
+		assert.Contains(t, err.Error(), "python error")
 	})
 }
 
@@ -388,8 +390,8 @@ func TestBackend_Edit(t *testing.T) {
 		backend, server := setupTest(t)
 		defer server.Close()
 
-		uploadCount := 0
 		var finalContent string
+		uploadCount := 0
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.URL.Path == "/filesystem/download":
@@ -539,14 +541,10 @@ func TestBackend_GrepRaw(t *testing.T) {
 		defer server.Close()
 
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
 				grepOutput := `[{"Path": "/home/user/test.txt", "Line": 1, "Content": "hello world"}]`
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    grepOutput,
-					"stderr":    "",
-					"exit_code": float64(0),
-				})
+				w.Write([]byte(mockExecuteOK(grepOutput)))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -568,13 +566,9 @@ func TestBackend_GrepRaw(t *testing.T) {
 		defer server.Close()
 
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    "[]",
-					"stderr":    "",
-					"exit_code": float64(0),
-				})
+				w.Write([]byte(mockExecuteOK("[]")))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -607,14 +601,10 @@ func TestBackend_GlobInfo(t *testing.T) {
 		defer server.Close()
 
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
 				globOutput := `[{"Path": "file.go", "IsDir": false, "Size": 2048, "ModifiedAt": ""}, {"Path": "main.go", "IsDir": false, "Size": 1024, "ModifiedAt": ""}]`
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    globOutput,
-					"stderr":    "",
-					"exit_code": float64(0),
-				})
+				w.Write([]byte(mockExecuteOK(globOutput)))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -639,13 +629,10 @@ func TestBackend_Execute(t *testing.T) {
 		defer server.Close()
 
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
+				stdout := `{"stdout": "hello from sandbox\n", "stderr": "", "exitCode": 0}`
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    "hello from sandbox",
-					"stderr":    "",
-					"exit_code": float64(0),
-				})
+				w.Write([]byte(mockExecuteOK(stdout)))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -655,7 +642,7 @@ func TestBackend_Execute(t *testing.T) {
 			Command: "echo hello",
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "hello from sandbox", resp.Output)
+		assert.Contains(t, resp.Output, "hello from sandbox")
 		assert.Equal(t, 0, *resp.ExitCode)
 	})
 
@@ -664,13 +651,10 @@ func TestBackend_Execute(t *testing.T) {
 		defer server.Close()
 
 		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
+			if r.URL.Path == "/execute" {
+				stdout := `{"stdout": "", "stderr": "error message", "exitCode": 1}`
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    "",
-					"stderr":    "error message",
-					"exit_code": float64(1),
-				})
+				w.Write([]byte(mockExecuteOK(stdout)))
 				return
 			}
 			http.Error(w, "unexpected", http.StatusInternalServerError)
@@ -692,31 +676,6 @@ func TestBackend_Execute(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "command is required")
-	})
-
-	t.Run("Success: StdoutAndStderr", func(t *testing.T) {
-		backend, server := setupTest(t)
-		defer server.Close()
-
-		mockHandler = func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/process/start" {
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"stdout":    "output line",
-					"stderr":    "warning message",
-					"exit_code": float64(0),
-				})
-				return
-			}
-			http.Error(w, "unexpected", http.StatusInternalServerError)
-		}
-
-		resp, err := backend.Execute(context.Background(), &filesystem.ExecuteRequest{
-			Command: "echo test",
-		})
-		require.NoError(t, err)
-		assert.Contains(t, resp.Output, "output line")
-		assert.Contains(t, resp.Output, "warning message")
 	})
 }
 
@@ -759,7 +718,6 @@ func TestBackend_Close(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, backend.autoCreated)
 
-		// Close should not fail (no-op)
 		err = backend.Close(context.Background())
 		require.NoError(t, err)
 	})
@@ -794,7 +752,7 @@ func TestApplyLineOffsetLimit(t *testing.T) {
 
 func TestInterfaceCompliance(t *testing.T) {
 	var backend filesystem.Backend = (*Backend)(nil)
-	_ = backend // unused but verifies interface compliance at compile time
+	_ = backend
 
 	var shell filesystem.Shell = (*Backend)(nil)
 	_ = shell

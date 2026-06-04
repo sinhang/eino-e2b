@@ -7,29 +7,38 @@ import (
 	"path/filepath"
 	"strings"
 
-	e2b "github.com/sinhang/e2b-go-sdk/e2b"
 	"github.com/cloudwego/eino/adk/filesystem"
+	e2b "github.com/sinhang/e2b-go-sdk/e2b"
 )
+
+// runPython executes a Python script inside the sandbox via the code interpreter
+// (port 49999) and returns the stdout output.
+//
+// This is the only supported execution path on Cube deployments — envd (port
+// 49983) and /process/start are not available.
+func (b *Backend) runPython(ctx context.Context, script string) (string, error) {
+	exec, err := b.interpreter.RunSimple(ctx, script)
+	if err != nil {
+		return "", fmt.Errorf("e2b: python execution failed: %w", err)
+	}
+	if exec.Error != nil {
+		return "", fmt.Errorf("e2b: python error: %s: %s", exec.Error.Name, exec.Error.Value)
+	}
+	return strings.Join(exec.Logs.Stdout, "\n"), nil
+}
 
 // LsInfo lists files and directories at the given path.
 func (b *Backend) LsInfo(ctx context.Context, req *filesystem.LsInfoRequest) ([]filesystem.FileInfo, error) {
 	path := filepath.Clean(req.Path)
-	// Use a Python script to get full FileInfo (path, is_dir, size, modified_at).
-	// Base64-encode the path to avoid shell escaping issues.
 	script := fmt.Sprintf(lsInfoPythonScript, path)
-	result, err := b.client.Commands(b.sandboxID).Run(ctx, e2b.RunCommandRequest{
-		Cmd:  "python3",
-		Args: []string{"-c", script},
-	})
+
+	output, err := b.runPython(ctx, script)
 	if err != nil {
 		return nil, fmt.Errorf("e2b: ls failed: %w", err)
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("e2b: ls script exited with code %d: %s", result.ExitCode, result.Stderr)
-	}
 
 	var files []filesystem.FileInfo
-	output := strings.TrimSpace(result.Stdout)
+	output = strings.TrimSpace(output)
 	if output == "" {
 		return files, nil
 	}
@@ -85,10 +94,6 @@ func (b *Backend) Write(ctx context.Context, req *filesystem.WriteRequest) error
 }
 
 // Edit performs a string replacement in a file.
-//
-// ReplaceAll controls whether all occurrences are replaced.
-// If ReplaceAll is false and the old string appears more than once,
-// the operation fails. The old and new strings must be different.
 func (b *Backend) Edit(ctx context.Context, req *filesystem.EditRequest) error {
 	if req.OldString == "" {
 		return fmt.Errorf("e2b: edit: old string is required")
@@ -99,17 +104,15 @@ func (b *Backend) Edit(ctx context.Context, req *filesystem.EditRequest) error {
 
 	path := filepath.Clean(req.FilePath)
 
-	// Read current content
 	content, err := b.Read(ctx, &filesystem.ReadRequest{
 		FilePath: path,
 		Offset:   1,
-		Limit:    0, // read all
+		Limit:    0,
 	})
 	if err != nil {
 		return fmt.Errorf("e2b: edit: read failed for %s: %w", path, err)
 	}
 
-	// Count occurrences
 	count := strings.Count(content.Content, req.OldString)
 	if count == 0 {
 		return fmt.Errorf("e2b: edit: string not found in file %s", path)
@@ -118,7 +121,6 @@ func (b *Backend) Edit(ctx context.Context, req *filesystem.EditRequest) error {
 		return fmt.Errorf("e2b: edit: string appears %d times in %s, use ReplaceAll=true to replace all occurrences", count, path)
 	}
 
-	// Perform replacement
 	var newContent string
 	if req.ReplaceAll {
 		newContent = strings.ReplaceAll(content.Content, req.OldString, req.NewString)
@@ -126,7 +128,6 @@ func (b *Backend) Edit(ctx context.Context, req *filesystem.EditRequest) error {
 		newContent = strings.Replace(content.Content, req.OldString, req.NewString, 1)
 	}
 
-	// Write back
 	_, err = b.client.UploadFile(ctx, e2b.UploadFileRequest{
 		Path:    path,
 		Content: newContent,
@@ -138,8 +139,6 @@ func (b *Backend) Edit(ctx context.Context, req *filesystem.EditRequest) error {
 }
 
 // GrepRaw searches for a pattern in files using ripgrep (rg) inside the sandbox.
-//
-// Falls back to grep if rg is not available.
 func (b *Backend) GrepRaw(ctx context.Context, req *filesystem.GrepRequest) ([]filesystem.GrepMatch, error) {
 	if req.Pattern == "" {
 		return nil, fmt.Errorf("e2b: grep: pattern is required")
@@ -153,19 +152,13 @@ func (b *Backend) GrepRaw(ctx context.Context, req *filesystem.GrepRequest) ([]f
 	}
 
 	script := buildGrepScript(req)
-	result, err := b.client.Commands(b.sandboxID).Run(ctx, e2b.RunCommandRequest{
-		Cmd:  "python3",
-		Args: []string{"-c", script},
-	})
+	output, err := b.runPython(ctx, script)
 	if err != nil {
 		return nil, fmt.Errorf("e2b: grep failed: %w", err)
 	}
-	if result.ExitCode != 0 && result.ExitCode != 1 { // rg exit code 1 = no matches
-		return nil, fmt.Errorf("e2b: grep script exited with code %d: %s", result.ExitCode, result.Stderr)
-	}
 
 	var matches []filesystem.GrepMatch
-	output := strings.TrimSpace(result.Stdout)
+	output = strings.TrimSpace(output)
 	if output == "" {
 		return matches, nil
 	}
@@ -185,19 +178,13 @@ func (b *Backend) GlobInfo(ctx context.Context, req *filesystem.GlobInfoRequest)
 	}
 
 	script := fmt.Sprintf(globPythonScript, path, req.Pattern)
-	result, err := b.client.Commands(b.sandboxID).Run(ctx, e2b.RunCommandRequest{
-		Cmd:  "python3",
-		Args: []string{"-c", script},
-	})
+	output, err := b.runPython(ctx, script)
 	if err != nil {
 		return nil, fmt.Errorf("e2b: glob failed: %w", err)
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("e2b: glob script exited with code %d: %s", result.ExitCode, result.Stderr)
-	}
 
 	var files []filesystem.FileInfo
-	output := strings.TrimSpace(result.Stdout)
+	output = strings.TrimSpace(output)
 	if output == "" {
 		return files, nil
 	}
@@ -209,8 +196,6 @@ func (b *Backend) GlobInfo(ctx context.Context, req *filesystem.GlobInfoRequest)
 
 // --- helper functions ---
 
-// applyLineOffsetLimit extracts a range of lines from content.
-// offset is 1-indexed. Returns the sliced content.
 func applyLineOffsetLimit(content string, offset, limit int) string {
 	if content == "" {
 		return content
@@ -218,12 +203,11 @@ func applyLineOffsetLimit(content string, offset, limit int) string {
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
 
-	// offset is 1-indexed
 	if offset > totalLines {
 		return ""
 	}
 
-	start := offset - 1 // convert to 0-indexed
+	start := offset - 1
 	end := start + limit
 	if end > totalLines {
 		end = totalLines
@@ -232,8 +216,6 @@ func applyLineOffsetLimit(content string, offset, limit int) string {
 	return strings.Join(lines[start:end], "\n")
 }
 
-// buildGrepScript builds a Python script that wraps ripgrep to produce JSON output
-// matching the filesystem.GrepMatch format.
 func buildGrepScript(req *filesystem.GrepRequest) string {
 	path := req.Path
 	if path == "" {
@@ -241,9 +223,7 @@ func buildGrepScript(req *filesystem.GrepRequest) string {
 	}
 
 	caseFlag := ""
-	if !req.CaseInsensitive {
-		caseFlag = ""
-	} else {
+	if req.CaseInsensitive {
 		caseFlag = " -i"
 	}
 
@@ -270,7 +250,6 @@ func buildGrepScript(req *filesystem.GrepRequest) string {
 		fileTypeFlag += fmt.Sprintf(" --type %s", req.FileType)
 	}
 
-	// Escape single quotes in pattern
 	pattern := strings.ReplaceAll(req.Pattern, "'", "'\"'\"'")
 
 	return fmt.Sprintf(grepPythonScript, caseFlag, multilineFlag, afterFlag, beforeFlag, globFlag, fileTypeFlag, pattern, path)
@@ -318,9 +297,7 @@ file_type_flag = %[6]q
 pattern = %[7]q
 search_path = %[8]q
 
-# Try rg first, fall back to grep
 try:
-    cmd = "rg --json" + case_flag + multiline_flag + after_flag + before_flag + glob_flag + file_type_flag + " -e '" + pattern.replace("'", "'\"'\"'") + "' " + search_path
     result = subprocess.run(["rg", "--json"] +
         (["-i"] if case_flag.strip() else []) +
         (["-U", "--multiline-dotall"] if multiline_flag.strip() else []) +
@@ -333,7 +310,6 @@ try:
     if result.returncode not in (0, 1):
         raise RuntimeError("rg failed: " + result.stderr)
 except (FileNotFoundError, Exception):
-    # Fall back to grep
     try:
         grep_cmd = ["grep", "-rn"]
         if case_flag.strip():
@@ -346,12 +322,10 @@ except (FileNotFoundError, Exception):
         print("[]")
         exit(0)
 
-# Parse output
 responses = []
 for line in result.stdout.strip().split("\n"):
     if not line:
         continue
-    # Try JSON (rg output)
     try:
         data = json.loads(line)
         if data.get("type") not in ("match", "context"):
@@ -367,7 +341,6 @@ for line in result.stdout.strip().split("\n"):
         continue
     except json.JSONDecodeError:
         pass
-    # Try grep format: path:line:content
     parts = line.split(":", 2)
     if len(parts) >= 3:
         try:
