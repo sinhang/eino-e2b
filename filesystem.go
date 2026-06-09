@@ -2,7 +2,9 @@ package e2b
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -77,11 +79,19 @@ func (b *Backend) LsInfo(ctx context.Context, req *filesystem.LsInfoRequest) ([]
 //
 // Offset is 1-indexed (1 means the first line). Values <= 0 default to 1.
 // Limit <= 0 defaults to 2000 lines.
+//
+// On Cube deployments the /filesystem/download API may not be available;
+// falls back to Python code execution automatically.
 func (b *Backend) Read(ctx context.Context, req *filesystem.ReadRequest) (*filesystem.FileContent, error) {
 	path := filepath.Clean(req.FilePath)
 
 	resp, err := b.client.DownloadFile(ctx, e2b.DownloadFileRequest{Path: path})
 	if err != nil {
+		// Cube 沙箱可能不暴露文件下载 API，回退到 Python
+		if isAPI404(err) {
+			log.Printf("e2b: read: download API unavailable, falling back to Python for %s", path)
+			return b.readViaPython(ctx, path, req.Offset, req.Limit)
+		}
 		return nil, fmt.Errorf("e2b: read failed for %s: %w", path, err)
 	}
 
@@ -100,6 +110,9 @@ func (b *Backend) Read(ctx context.Context, req *filesystem.ReadRequest) (*files
 
 // Write creates or overwrites a file in the sandbox.
 // Parent directories are created automatically by the E2B API.
+//
+// On Cube deployments the /filesystem/upload API may not be available;
+// falls back to Python code execution automatically.
 func (b *Backend) Write(ctx context.Context, req *filesystem.WriteRequest) error {
 	path := filepath.Clean(req.FilePath)
 
@@ -108,6 +121,11 @@ func (b *Backend) Write(ctx context.Context, req *filesystem.WriteRequest) error
 		Content: req.Content,
 	})
 	if err != nil {
+		// Cube 沙箱可能不暴露文件上传 API，回退到 Python
+		if isAPI404(err) {
+			log.Printf("e2b: write: upload API unavailable, falling back to Python for %s", path)
+			return b.writeViaPython(ctx, path, req.Content)
+		}
 		return fmt.Errorf("e2b: write failed for %s: %w", path, err)
 	}
 	return nil
@@ -268,6 +286,63 @@ func extractLastJSONArray(s string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isAPI404 检查错误是否为 e2b API 返回的 404 状态码。
+// Cube 沙箱模板可能不暴露文件上传/下载 API（仅暴露代码解释器端口），
+// 此时需要回退到 Python 执行方式。
+func isAPI404(err error) bool {
+	var apiErr *e2b.APIResponseError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == 404
+	}
+	return false
+}
+
+// readViaPython 通过 Python 脚本读取沙箱内的文件内容。
+// 当 /filesystem/download API 不可用时作为回退方案。
+func (b *Backend) readViaPython(ctx context.Context, path string, offset, limit int) (*filesystem.FileContent, error) {
+	script := fmt.Sprintf(readFilePythonScript, path)
+
+	output, err := b.runPython(ctx, script)
+	if err != nil {
+		return nil, fmt.Errorf("e2b: python read failed for %s: %w", path, err)
+	}
+
+	output = strings.TrimSpace(output)
+	if output == readFileNotFoundMarker {
+		return nil, fmt.Errorf("e2b: read: file not found: %s", path)
+	}
+	if strings.HasPrefix(output, readFileErrorPrefix) {
+		return nil, fmt.Errorf("e2b: python read error: %s", strings.TrimPrefix(output, readFileErrorPrefix))
+	}
+
+	// base64 解码文件内容
+	contentBytes, err := base64.StdEncoding.DecodeString(output)
+	if err != nil {
+		return nil, fmt.Errorf("e2b: failed to decode base64 content for %s: %w", path, err)
+	}
+
+	content := applyLineOffsetLimit(string(contentBytes), offset, limit)
+	return &filesystem.FileContent{Content: content}, nil
+}
+
+// writeViaPython 通过 Python 脚本在沙箱内写入文件。
+// 当 /filesystem/upload API 不可用时作为回退方案。
+func (b *Backend) writeViaPython(ctx context.Context, path, content string) error {
+	b64 := base64.StdEncoding.EncodeToString([]byte(content))
+	script := fmt.Sprintf(writeFilePythonScript, path, b64)
+
+	output, err := b.runPython(ctx, script)
+	if err != nil {
+		return fmt.Errorf("e2b: python write failed for %s: %w", path, err)
+	}
+
+	output = strings.TrimSpace(output)
+	if output != "ok" {
+		return fmt.Errorf("e2b: python write unexpected output for %s: %s", path, output)
+	}
+	return nil
 }
 
 func applyLineOffsetLimit(content string, offset, limit int) string {
@@ -471,4 +546,44 @@ for m in matches:
     }
     results.append(result)
 print(json.dumps(results))
+`
+
+// readFileNotFoundMarker Python 脚本中文件不存在的标记
+const readFileNotFoundMarker = "__FILE_NOT_FOUND__"
+
+// readFileErrorPrefix Python 脚本中读取错误的前缀
+const readFileErrorPrefix = "__ERROR__: "
+
+// readFilePythonScript 通过 base64 编码读取沙箱内文件内容。
+// 当 /filesystem/download API 不可用时使用。
+const readFilePythonScript = `
+import base64, sys
+
+path = %[1]q
+try:
+    with open(path, 'rb') as f:
+        content = f.read()
+    print(base64.b64encode(content).decode())
+except FileNotFoundError:
+    print("__FILE_NOT_FOUND__")
+except Exception as e:
+    print("__ERROR__: " + str(e), file=sys.stderr)
+    print("__ERROR__: " + str(e))
+`
+
+// writeFilePythonScript 通过 base64 解码在沙箱内写入文件。
+// 当 /filesystem/upload API 不可用时使用。
+const writeFilePythonScript = `
+import base64, os, sys
+
+path = %[1]q
+content_b64 = %[2]q
+try:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'wb') as f:
+        f.write(base64.b64decode(content_b64))
+    print("ok")
+except Exception as e:
+    print("error: " + str(e), file=sys.stderr)
+    print("error: " + str(e))
 `
