@@ -184,6 +184,16 @@ func (b *Backend) GrepRaw(ctx context.Context, req *filesystem.GrepRequest) ([]f
 		return matches, nil
 	}
 	if err := json.Unmarshal([]byte(output), &matches); err != nil {
+		log.Printf("e2b: grep: primary JSON parse failed (len=%d, output=%q): %v", len(output), output, err)
+		// 回退策略：尝试提取最后一个完整的 JSON 数组
+		if extracted, ok := extractLastJSONArray(output); ok {
+			if err2 := json.Unmarshal([]byte(extracted), &matches); err2 == nil {
+				log.Printf("e2b: grep: fallback extraction succeeded (extracted len=%d)", len(extracted))
+				return matches, nil
+			} else {
+				log.Printf("e2b: grep: fallback extraction also failed: %v", err2)
+			}
+		}
 		return nil, fmt.Errorf("e2b: grep: failed to parse output: %w", err)
 	}
 	return matches, nil
@@ -211,12 +221,54 @@ func (b *Backend) GlobInfo(ctx context.Context, req *filesystem.GlobInfoRequest)
 		return files, nil
 	}
 	if err := json.Unmarshal([]byte(output), &files); err != nil {
+		log.Printf("e2b: glob: primary JSON parse failed (len=%d, output=%q): %v", len(output), output, err)
+		// 回退策略：尝试提取最后一个完整的 JSON 数组
+		// 当 e2b 代码解释器将 stdout 拆分为多条 NDJSON 消息时，
+		// runPython 中的 strings.Join 可能将多个 JSON 值串联在一起
+		if extracted, ok := extractLastJSONArray(output); ok {
+			if err2 := json.Unmarshal([]byte(extracted), &files); err2 == nil {
+				log.Printf("e2b: glob: fallback extraction succeeded (extracted len=%d)", len(extracted))
+				return files, nil
+			} else {
+				log.Printf("e2b: glob: fallback extraction also failed: %v", err2)
+			}
+		}
 		return nil, fmt.Errorf("e2b: glob: failed to parse output: %w", err)
 	}
 	return files, nil
 }
 
 // --- helper functions ---
+
+// extractLastJSONArray 从可能包含多个 JSON 值的字符串中提取最后一个 JSON 数组。
+//
+// e2b 代码解释器通过 NDJSON 流返回 stdout。当 runPython 用
+// "\n" 连接 exec.Logs.Stdout 时，如果解释器将单次 print 输出
+// 拆分为多条 NDJSON 消息，可能会产生多个 JSON 值串联的情况
+// （例如 "[]\n[...]"）。json.Unmarshal 只能解析单个 JSON 值，
+// 遇到第二个值就会报错。
+//
+// 本函数从字符串末尾向前扫描，通过括号深度计数找到最后一个
+// 匹配的 JSON 数组，作为回退方案保证健壮性。
+func extractLastJSONArray(s string) (string, bool) {
+	lastClose := strings.LastIndex(s, "]")
+	if lastClose == -1 {
+		return "", false
+	}
+	depth := 0
+	for i := lastClose; i >= 0; i-- {
+		switch s[i] {
+		case ']':
+			depth++
+		case '[':
+			depth--
+			if depth == 0 {
+				return s[i : lastClose+1], true
+			}
+		}
+	}
+	return "", false
+}
 
 func applyLineOffsetLimit(content string, offset, limit int) string {
 	if content == "" {
