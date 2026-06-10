@@ -105,6 +105,7 @@ func (b *Backend) ExecuteStreaming(ctx context.Context, req *filesystem.ExecuteR
 		// streaming chunk as a JSON line, plus a final "done" line.
 		stdout := strings.Join(exec.Logs.Stdout, "\n")
 		scanner := bufio.NewScanner(strings.NewReader(stdout))
+		scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" {
