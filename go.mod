@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/cloudwego/eino v0.8.13
-	github.com/sinhang/e2b-go-sdk v0.1.4
+	github.com/sinhang/e2b-go-sdk v0.1.5
 	github.com/stretchr/testify v1.10.0
 )
 
