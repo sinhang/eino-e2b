@@ -83,6 +83,8 @@ github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZN
 github.com/rollbar/rollbar-go v1.0.2/go.mod h1:AcFs5f0I+c71bpHlXNNDbOWJiKwjFDtISeXco0L5PKQ=
 github.com/sinhang/e2b-go-sdk v0.1.6 h1:LMmsJ6/q6Vxgc/E2CmjZUqcZp2ma0TWlq3b2VNvUq8M=
 github.com/sinhang/e2b-go-sdk v0.1.6/go.mod h1:JvTO3qCJkKjlyiGNpGC1nPuzqswumZDbxUJtaEgqDJc=
+github.com/sinhang/e2b-go-sdk v0.1.7 h1:ma5+g5PbeGsjYf93mLH/+3X4GzRWo0/XH57RjdjQIog=
+github.com/sinhang/e2b-go-sdk v0.1.7/go.mod h1:JvTO3qCJkKjlyiGNpGC1nPuzqswumZDbxUJtaEgqDJc=
 github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=
 github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=
 github.com/sirupsen/logrus v1.9.3/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
