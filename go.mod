@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/cloudwego/eino v0.8.13
-	github.com/sinhang/e2b-go-sdk v0.1.5
+	github.com/sinhang/e2b-go-sdk v0.1.6
 	github.com/stretchr/testify v1.10.0
 )
 
@@ -40,5 +40,3 @@ require (
 	golang.org/x/sys v0.26.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/sinhang/e2b-go-sdk => /mnt/nvme2/develope/develope/code/go-project/cube-sandbox

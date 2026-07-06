@@ -144,24 +144,19 @@ func NewBackend(ctx context.Context, cfg *Config) (*Backend, error) {
 
 		// Pass environment variables if provided.
 		if len(cfg.Envs) > 0 {
-			envMap := make(e2b.JSONMap, len(cfg.Envs))
+			envMap := make(map[string]string, len(cfg.Envs))
 			for k, v := range cfg.Envs {
 				envMap[k] = v
 			}
 			createReq.EnvVars = envMap
 		}
 
-		// Pass volume mounts if provided.
-		if len(cfg.VolumeMounts) > 0 {
-			createReq.VolumeMounts = make([]e2b.JSONMap, 0, len(cfg.VolumeMounts))
-			for _, vm := range cfg.VolumeMounts {
-				createReq.VolumeMounts = append(createReq.VolumeMounts, e2b.JSONMap(vm))
-			}
-		}
-
 		sandbox, err := client.CreateSandbox(ctx, createReq)
 		if err != nil {
 			return nil, fmt.Errorf("e2b: failed to create sandbox: %w", err)
+		}
+		if sandbox == nil {
+			return nil, fmt.Errorf("e2b: sandbox creation failed")
 		}
 		sandboxID = sandbox.SandboxID
 		if sandboxID == "" {
