@@ -35,11 +35,13 @@ func (b *Backend) runPython(ctx context.Context, script string) (string, error) 
 	stderr := strings.Join(exec.Logs.Stderr, "\n")
 
 	// If the script produced no stdout and no stderr, the code interpreter
-	// may have silently failed (e.g. non-NDJSON response silently discarded).
-	// Log a warning and include stderr in the error if available.
+	// may have silently failed (e.g. non-NDJSON response silently discarded,
+	// or sandbox code interpreter process is dead). Treat this as an error
+	// so callers (especially LazySandbox) can detect the failure and retry.
 	if stdout == "" && stderr == "" && len(script) > 0 {
 		log.Printf("e2b: runPython: code interpreter returned empty response (stdout=0 stderr=0 results=%d)",
 			len(exec.Results))
+		return "", fmt.Errorf("e2b: code interpreter returned empty response (sandbox may be expired)")
 	}
 
 	if stderr != "" {
@@ -349,8 +351,15 @@ func applyLineOffsetLimit(content string, offset, limit int) string {
 	if content == "" {
 		return content
 	}
+	if offset <= 0 {
+		offset = 1
+	}
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
+
+	if limit <= 0 {
+		limit = totalLines
+	}
 
 	if offset > totalLines {
 		return ""

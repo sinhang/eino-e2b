@@ -208,6 +208,6 @@ Apache License 2.0
 ### tag
 ```shell
 git push -u origin main
-git tag v0.1.7
-git push origin v0.1.7
+git tag v0.1.8
+git push origin v0.1.8
 ```
