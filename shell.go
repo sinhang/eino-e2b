@@ -48,6 +48,12 @@ func (b *Backend) Execute(ctx context.Context, req *filesystem.ExecuteRequest) (
 				resp.Output = "[stderr]:\n" + out.Stderr
 			}
 		}
+		// exitCode -1 with empty stdout means the Python subprocess itself
+		// failed (e.g. sandbox code interpreter is dead, CubeProxy error).
+		// Treat this as an error so LazySandbox can auto-refresh.
+		if exitCode == -1 && out.Stdout == "" {
+			return nil, fmt.Errorf("e2b: command execution failed (exitCode=-1, stderr=%q)", out.Stderr)
+		}
 		return resp, nil
 	}
 
