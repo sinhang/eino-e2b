@@ -67,6 +67,8 @@ type Config struct {
 
 	// HTTPClient allows injecting a custom HTTP client (useful for testing).
 	HTTPClient *http.Client
+
+	Metadata map[string]interface{}
 }
 
 // Backend implements filesystem.Backend backed by an E2B sandbox.
@@ -149,6 +151,16 @@ func NewBackend(ctx context.Context, cfg *Config) (*Backend, error) {
 				envMap[k] = v
 			}
 			createReq.EnvVars = envMap
+		}
+
+		if len(cfg.VolumeMounts) > 0 {
+			for _, mount := range cfg.VolumeMounts {
+				createReq.VolumeMounts = append(createReq.VolumeMounts, mount)
+			}
+		}
+
+		if len(cfg.Metadata) > 0 {
+			createReq.Metadata = cfg.Metadata
 		}
 
 		sandbox, err := client.CreateSandbox(ctx, createReq)
